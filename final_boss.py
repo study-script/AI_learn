@@ -2,6 +2,7 @@ import os
 import json
 import requests
 import streamlit as st
+import math
 from dotenv import load_dotenv
 from openai import OpenAI
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -20,9 +21,12 @@ st.caption("支持：聊天、计算、联网搜索、文档阅读")
 # ================= 工具定义 =================
 def calculate(expression):
     try:
-        return str(eval(expression))
-    except:
-        return "计算错误"
+        # 定义一个安全的字典，不让 AI 乱搞
+        safe_dict = {"math": math, "__builtins__": None}
+        result = eval(expression, safe_dict)
+        return str(result)
+    except Exception as e:
+        return f"计算错误: 表达式写错了。错误信息: {e}"
 
 def search_web(query):
     try:
@@ -105,7 +109,12 @@ def agent_run(user_input):
         {"type": "function", "function": {"name": "search_local_docs", "description": "查询本地上传的文档", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
     ]
     
-    system_prompt = "你是一个全能私人助理。如果问题涉及文档，必须优先调用 `search_local_docs`。只有在文档找不到时，才允许使用常识或联网搜索。"
+    system_prompt = """
+    你是一个全能私人助理。
+    如果用户的问题涉及任何“故事”、“文档”、“小说”，你必须优先调用 `search_local_docs` 工具！
+    
+    【极其重要】：如果遇到复杂的数学公式（比如房贷、投资利息），请直接用 Python 语法写出完整表达式，一次性传给 `calculate` 工具，不要分步骤算！
+    """
     
     # 加上系统提示词和本次输入
     messages = [{"role": "system", "content": system_prompt}] + st.session_state.messages
@@ -122,13 +131,14 @@ def agent_run(user_input):
             )
             message = response.choices[0].message
             
-            # 如果不需要工具，直接返回
+            # 1. 如果不需要工具，直接返回最终回答并结束函数
             if not message.tool_calls:
                 return message.content
                 
-            # 如果需要调工具
+            # 2. 如果需要调工具，把 AI 的思考加入消息记录
             messages.append(message.model_dump())
             
+            # 3. 遍历并执行所有工具
             for tool_call in message.tool_calls:
                 func_name = tool_call.function.name
                 args = json.loads(tool_call.function.arguments)
@@ -148,11 +158,15 @@ def agent_run(user_input):
                     else:
                         result = "未上传本地文档。"
                 
+                # 将工具执行结果喂回给大模型
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tool_call.id,
                     "content": result
                 })
+    
+    # 4. 如果 5 次循环结束还没算出结果，兜底提示（注意这个 return 是和 for 循环对齐的！）
+    return "抱歉，这个任务太复杂了，我尝试了 5 次都没成功。请尝试把问题拆分成几个小步骤。"
 
 # ================= 聊天输入框 =================
 if prompt := st.chat_input("请问点什么？(聊天、算数、查天气、问文档都可以)"):
