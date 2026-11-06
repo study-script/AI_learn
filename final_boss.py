@@ -109,11 +109,13 @@ def agent_run(user_input):
         {"type": "function", "function": {"name": "search_local_docs", "description": "查询本地上传的文档", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
     ]
     
-    system_prompt = """
+       system_prompt = """
     你是一个全能私人助理。
     如果用户的问题涉及任何“故事”、“文档”、“小说”，你必须优先调用 `search_local_docs` 工具！
     
-    【极其重要】：如果遇到复杂的数学公式（比如房贷、投资利息），请直接用 Python 语法写出完整表达式，一次性传给 `calculate` 工具，不要分步骤算！
+    【计算原则】：
+    1. 遇到非常复杂的纯数字公式（如房贷、复利），请直接写成 Python 语法传给 `calculate` 工具。
+    2. 遇到带有单位（如斤、厘米、公里）的换算，或者简单的常识性数学题（如计算 BMI、消耗多少卡路里），**请你自己直接在脑海里算出结果**，不要调用 `calculate` 工具，以免报错！
     """
     
     # 加上系统提示词和本次输入
