@@ -1,0 +1,168 @@
+import os
+import json
+import requests
+import streamlit as st
+from dotenv import load_dotenv
+from openai import OpenAI
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_chroma import Chroma
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from pypdf import PdfReader
+
+load_dotenv()
+
+# ================= 页面设置 =================
+st.set_page_config(page_title="全能超级助理", page_icon="🤖")
+st.title("🤖 全能超级助理")
+st.caption("支持：聊天、计算、联网搜索、文档阅读")
+
+# ================= 工具定义 =================
+def calculate(expression):
+    try:
+        return str(eval(expression))
+    except:
+        return "计算错误"
+
+def search_web(query):
+    try:
+        api_key = os.getenv("BOCHA_API_KEY")
+        url = "https://api.bochaai.com/v1/web-search"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"query": query, "summary": True, "count": 3}
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        data = response.json()
+        results = data.get("data", {}).get("webPages", {}).get("value", [])
+        formatted = ""
+        for r in results:
+            formatted += f"标题: {r.get('name')}\n摘要: {r.get('summary')}\n\n"
+        return formatted if formatted else "未找到相关结果。"
+    except Exception as e:
+        return f"搜索失败: {e}"
+
+# ================= 状态管理 =================
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "vectorstore" not in st.session_state:
+    st.session_state.vectorstore = None
+if "current_file" not in st.session_state:
+    st.session_state.current_file = None
+
+# ================= 侧边栏：文档上传 =================
+with st.sidebar:
+    st.header("📂 个人知识库")
+    uploaded_file = st.file_uploader("上传后，助理将优先基于文档回答", type=["pdf", "txt"])
+    
+    if uploaded_file:
+        if st.session_state.current_file != uploaded_file.name:
+            st.session_state.vectorstore = None
+            st.session_state.messages = [] 
+            st.session_state.current_file = uploaded_file.name
+            
+        if st.session_state.vectorstore is None:
+            with st.spinner("正在解析文档..."):
+                text = ""
+                if uploaded_file.type == "application/pdf":
+                    reader = PdfReader(uploaded_file)
+                    for page in reader.pages:
+                        text += page.extract_text() + "\n"
+                else:
+                    text = uploaded_file.read().decode("utf-8", errors="ignore")
+
+                # 🔥 优化版切片：增大 overlap，防止上下文断裂
+                text_splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=400, chunk_overlap=150,
+                    separators=["\n\n", "\n", "。", "！", "？", "，", " ", ""]
+                )
+                chunks = text_splitter.split_text(text)
+                docs = [Document(page_content=chunk) for chunk in chunks]
+
+                embeddings = OpenAIEmbeddings(
+                    api_key=os.getenv("SILICONFLOW_API_KEY"),
+                    base_url="https://api.siliconflow.cn/v1",
+                    model="BAAI/bge-m3"
+                )
+                st.session_state.vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
+                st.success(f"✅ 解析完成！共 {len(docs)} 个片段。")
+    
+    if st.button("🗑️ 移除当前文档"):
+        st.session_state.vectorstore = None
+        st.session_state.current_file = None
+        st.session_state.messages = []
+        st.rerun()
+
+# ================= 展示历史聊天 =================
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# ================= 核心大脑（Agent Loop） =================
+def agent_run(user_input):
+    # 准备工具说明书
+    tools = [
+        {"type": "function", "function": {"name": "calculate", "description": "数学计算", "parameters": {"type": "object", "properties": {"expression": {"type": "string"}}, "required": ["expression"]}}},
+        {"type": "function", "function": {"name": "search_web", "description": "实时联网查询", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
+        {"type": "function", "function": {"name": "search_local_docs", "description": "查询本地上传的文档", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
+    ]
+    
+    system_prompt = "你是一个全能私人助理。如果问题涉及文档，必须优先调用 `search_local_docs`。只有在文档找不到时，才允许使用常识或联网搜索。"
+    
+    # 加上系统提示词和本次输入
+    messages = [{"role": "system", "content": system_prompt}] + st.session_state.messages
+    
+    client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
+
+    # 开始最多 5 轮思考
+    for step in range(5):
+        with st.spinner(f"AI 思考中 (第 {step+1} 轮)..."):
+            response = client.chat.completions.create(
+                model="deepseek-chat",
+                messages=messages,
+                tools=tools
+            )
+            message = response.choices[0].message
+            
+            # 如果不需要工具，直接返回
+            if not message.tool_calls:
+                return message.content
+                
+            # 如果需要调工具
+            messages.append(message.model_dump())
+            
+            for tool_call in message.tool_calls:
+                func_name = tool_call.function.name
+                args = json.loads(tool_call.function.arguments)
+                
+                # 在网页上显示工具调用状态
+                st.info(f"🛠️ 正在使用工具: {func_name}...")
+                
+                if func_name == "calculate":
+                    result = calculate(args["expression"])
+                elif func_name == "search_web":
+                    result = search_web(args["query"])
+                elif func_name == "search_local_docs":
+                    if st.session_state.vectorstore:
+                        retriever = st.session_state.vectorstore.as_retriever(search_kwargs={"k": 4})
+                        docs = retriever.invoke(args["query"])
+                        result = "\n\n".join([d.page_content for d in docs])
+                    else:
+                        result = "未上传本地文档。"
+                
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call.id,
+                    "content": result
+                })
+
+# ================= 聊天输入框 =================
+if prompt := st.chat_input("请问点什么？(聊天、算数、查天气、问文档都可以)"):
+    # 记录并显示用户输入
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # 调用大脑
+    with st.chat_message("assistant"):
+        reply = agent_run(prompt)
+        st.markdown(reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
