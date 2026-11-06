@@ -109,26 +109,31 @@ def agent_run(user_input):
         {"type": "function", "function": {"name": "search_local_docs", "description": "查询本地上传的文档", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}}
     ]
     
-       system_prompt = """
-    你是一个全能私人助理。
-    如果用户的问题涉及任何“故事”、“文档”、“小说”，你必须优先调用 `search_local_docs` 工具！
-    
-    【计算原则】：
-    1. 遇到非常复杂的纯数字公式（如房贷、复利），请直接写成 Python 语法传给 `calculate` 工具。
-    2. 遇到带有单位（如斤、厘米、公里）的换算，或者简单的常识性数学题（如计算 BMI、消耗多少卡路里），**请你自己直接在脑海里算出结果**，不要调用 `calculate` 工具，以免报错！
-    """
-    
     # 加上系统提示词和本次输入
-    messages = [{"role": "system", "content": system_prompt}] + st.session_state.messages
+    messages = [{"role": "system", "content": "你是一个全能私人助理。"}] + st.session_state.messages
     
     client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
 
     # 开始最多 5 轮思考
     for step in range(5):
+        
+        # ⚠️ 注意看下面这行，system_prompt 的缩进要和 for 循环对齐
+        system_prompt = """
+        你是一个全能私人助理。
+        如果用户的问题涉及任何“故事”、“文档”、“小说”，你必须优先调用 `search_local_docs` 工具！
+        
+        【计算原则】：
+        1. 遇到非常复杂的纯数字公式（如房贷、复利），请直接写成 Python 语法传给 `calculate` 工具。
+        2. 遇到带有单位（如斤、厘米、公里）的换算，或者简单的常识性数学题（如计算 BMI、消耗多少卡路里），请你自己直接在脑海里算出结果，不要调用 `calculate` 工具，以免报错！
+        """
+        
+        # 把提示词插到最前面
+        current_messages = [{"role": "system", "content": system_prompt}] + messages
+        
         with st.spinner(f"AI 思考中 (第 {step+1} 轮)..."):
             response = client.chat.completions.create(
                 model="deepseek-chat",
-                messages=messages,
+                messages=current_messages,
                 tools=tools
             )
             message = response.choices[0].message
@@ -167,7 +172,7 @@ def agent_run(user_input):
                     "content": result
                 })
     
-    # 4. 如果 5 次循环结束还没算出结果，兜底提示（注意这个 return 是和 for 循环对齐的！）
+    # 4. 兜底提示
     return "抱歉，这个任务太复杂了，我尝试了 5 次都没成功。请尝试把问题拆分成几个小步骤。"
 
 # ================= 聊天输入框 =================
